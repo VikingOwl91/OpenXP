@@ -542,8 +542,13 @@ local function Questie()
     end
     return questie or nil
 end
+local providers = {}
 function card.HasQuestData()
-    return Questie() ~= nil or card.data.prereqs ~= nil
+    if Questie() ~= nil or card.data.prereqs ~= nil then return true end
+    local data = _G.OpenXP_ForeverData
+    if type(data) == "table" and type(data.quests) == "table" then return true end
+    -- Questie and the data addon are always in the list; anything more was registered
+    return #providers > 2
 end
 
 -- Questie builds a fresh table on every lookup, and the card, the map and
@@ -647,7 +652,6 @@ end
 -- source says where a rule comes from and is shown with it:
 --   "questie", "foreverdb_verified" (seen in WoW Forever) or
 --   "cmangos_classic" (Classic data, not confirmed in WoW Forever).
-local providers = {}
 function card.RegisterQuestProvider(name, provider)
     if type(name) ~= "string" or name == "" then return false end
     if provider ~= nil then
@@ -1103,9 +1107,33 @@ function card.StartDetour(target, ids, mode)
     card.Refresh(true)
 end
 
+-- Who to talk to for the walk's quest right now, as names for the quest
+-- targets (Targeting.lua); nil when no walk is on, so the guide's count
+function card.DetourTargets()
+    local d = card.detour
+    if d then return d.targets or {} end
+end
+local function WalkTargets(d, name)
+    local key = name or ""
+    d.targets = name and {name} or {}
+    if d.targetsKey == key then return end
+    d.targetsKey = key
+    local targeting = addon.targeting
+    if targeting and targeting.UpdateUnitList and addon.ScheduleTask then
+        addon:ScheduleTask(targeting.UpdateUnitList)
+    end
+end
+
 function card.StopDetour()
+    local was = card.detour
     card.detour = nil
     card.detourTarget = nil
+    if was then
+        local targeting = addon.targeting
+        if targeting and targeting.UpdateUnitList and addon.ScheduleTask then
+            addon:ScheduleTask(targeting.UpdateUnitList)
+        end
+    end
     local p = Profile()
     if p then p.openxpDetour = nil end
     if addon.UpdateGotoSteps then pcall(addon.UpdateGotoSteps) end
@@ -1153,7 +1181,7 @@ function card.DetourStep()
     local info = QuestInfo(id) or {}
     local name = QuestName(id)
     local level = info.l and info.l > 0 and fmt(" |cFF9EA3B3(lvl %d)|r", info.l) or ""
-    local elements, target
+    local elements, target, talkTo
     if not (addon.IsOnQuest and addon.IsOnQuest(id)) then
         local who = info.s and info.s[1] or "?"
         local where = info.s and info.s[2] == 0 and L("Loot or use %s to start it") or L("Get it from %s")
@@ -1165,6 +1193,8 @@ function card.DetourStep()
             tinsert(elements, {textOnly = true, text = fmt(L("|cFFF2C35CYou need level %d for this quest|r"), info.r)})
         end
         target = SpotElement(info.s)
+        -- an item that starts a quest is nobody to target
+        talkTo = info.s and info.s[2] ~= 0 and info.s[1] or nil
     else
         local objs = ObjectivesOf(id)
         local open = false
@@ -1183,8 +1213,10 @@ function card.DetourStep()
                 {tag = "turnin", text = fmt(L("Talk to %s"), who)},
             }
             target = SpotElement(info.f)
+            talkTo = info.f and info.f[2] ~= 0 and info.f[1] or nil
         end
     end
+    WalkTargets(d, talkTo ~= "?" and talkTo ~= "" and talkTo or nil)
     return {index = nil, detour = true, elements = elements}, index, target
 end
 

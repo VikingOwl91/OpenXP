@@ -824,5 +824,46 @@ try("chain walk: a giver in another zone gets a way there", function()
     done[1065] = true
     tarrenMillOver()
 end)
+try("chain walk: the quest targets are the walk's, not the guide step's", function()
+    local done, log = tarrenMill()
+    OpenXP_ForeverData.quests[1065] = {all = {1064}, preSrc = "foreverdb_verified",
+        start = {"Apothecary Zamah", 1456, 22.9, 21.0}, finish = {"Apothecary Lydon", 1424, 61.5, 19.2}}
+    done[1064] = true
+    assert(card.DetourTargets() == nil, "no walk, so the guide's own targets count")
+    local asked = 0
+    local wasTargeting, wasTask = addon.targeting, addon.ScheduleTask
+    addon.targeting = {UpdateUnitList = function() asked = asked + 1 end}
+    addon.ScheduleTask = function(_, fn) fn() end
+    card.StartDetour(1066, {1065}, "available")
+    local t = card.DetourTargets()
+    assert(t and #t == 1 and t[1] == "Apothecary Zamah", "pickup: the giver is the target")
+    assert(asked == 1, "the target list wasn't asked to update when the walk started: " .. asked)
+    card.Refresh(true)
+    assert(asked == 1, "the target list is updated again though nothing changed")
+    log[1065] = true
+    C_QuestLog = {GetQuestObjectives = function() return {{text = "x", finished = false}} end}
+    card.Refresh(true)
+    assert(#card.DetourTargets() == 0 and asked == 2, "objectives: nobody to talk to")
+    C_QuestLog = {GetQuestObjectives = function() return {{text = "x", finished = true}} end}
+    card.Refresh(true)
+    t = card.DetourTargets()
+    assert(t[1] == "Apothecary Lydon" and asked == 3, "turn in: the taker is the target")
+    card.StopDetour()
+    assert(card.DetourTargets() == nil and asked == 4, "back to the guide's targets when the walk ends")
+    addon.targeting, addon.ScheduleTask = wasTargeting, wasTask
+    done[1065] = true
+    tarrenMillOver()
+end)
+try("data addon: counts as quest data", function()
+    card.data = {}
+    QuestieLoader = nil
+    OpenXP_ForeverData = {quests = {}}
+    assert(card.HasQuestData(), "the data addon is quest data")
+    OpenXP_ForeverData = nil
+    card.RegisterQuestProvider("Mine", {Prereqs = function() end})
+    assert(card.HasQuestData(), "a registered provider is quest data")
+    card.RegisterQuestProvider("Mine", nil)
+    card.data = {prereqs = {}, chains = {}, info = {}}
+end)
 print(fails == 0 and "card smoke test passed" or (fails .. " failed"))
 return fails

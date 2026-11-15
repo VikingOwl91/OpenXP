@@ -525,5 +525,25 @@ do
     reset()
 end
 
+-- Without Questie, quest rules come from the card's providers (the data addon)
+do
+    reset()
+    local oldPrereqs, oldLevel = SS.api.Prereqs, SS.api.QuestLevel
+    SS.api.Prereqs = function(id)
+        if id == 1066 then return {all = {1065}} end
+        if id == 990 then return {any = {994, 995}} end
+    end
+    local missing = SS.MissingPrerequisites(1066, {})
+    check(#missing == 1 and missing[1] == 1065, "providers: a quest that needs another one first")
+    state.onQuest[1065] = true
+    check(#SS.MissingPrerequisites(1066, {}) == 0, "providers: nothing missing while the earlier quest is in the log")
+    missing = SS.MissingPrerequisites(990, {})
+    check(#missing == 1 and missing[1] == 994, "providers: one of several counts as one missing quest")
+    state.turnedIn[995] = true
+    check(#SS.MissingPrerequisites(990, {}) == 0, "providers: one of several is done")
+    SS.api.Prereqs, SS.api.QuestLevel = oldPrereqs, oldLevel
+    reset()
+end
+
 print(string.format("%d passed, %d failed", passes, failures))
 return failures
