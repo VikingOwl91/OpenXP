@@ -89,6 +89,8 @@ quest givers for the quests the guides use. It is built from the [ForeverDB](htt
 attribution term, so it is its own addon under that licence and is never copied into OpenXP. OpenXP reads it while you
 play and shows where each rule comes from: seen in WoW Forever, or Classic data that isn't confirmed in WoW Forever.
 
+Download it from https://github.com/VikingOwl91/OpenXP_ForeverData/releases, or build it yourself:
+
 1. Get the ForeverDB addon (`https://foreverdb.net/downloads/addon-manifest.json` lists the current zip and its
    SHA-256) and unzip it outside this repo.
 2. `python3 tools/compile_foreverdb.py --foreverdb PATH/ForeverDB --out PATH/dist` writes `dist/OpenXP_ForeverData/`
