@@ -545,5 +545,28 @@ do
     reset()
 end
 
+-- /oxp catchup: a pickup you already have in your log wasn't skipped
+do
+    reset()
+    local guide = {steps = {
+        {elements = {{tag = "accept", questId = 496}, {tag = "turnin", questId = 1065}, {tag = "accept", questId = 1066}}},
+        {elements = {{tag = "complete", questId = 496}}},
+        {elements = {{tag = "accept", questId = 9}}},
+    }}
+    addon.card = {
+        StepStatus = function(_, i) return i == 1 and "chain" or nil end,
+        HasQuestData = function() return true end,
+        MissingChain = function(id) return id == 1066 and {1065} or {} end,
+    }
+    addon.GetGuideProgress = function() return 3 end
+    state.onQuest[496] = true
+    local out = SS.SkippedChains(guide)
+    local got = {}
+    for _, row in ipairs(out) do got[#got + 1] = row.quest end
+    check(table.concat(got, ",") == "1065,1066", "catchup: lists what was missed, not a quest in your log: " .. table.concat(got, ","))
+    addon.card, addon.GetGuideProgress = nil, nil
+    reset()
+end
+
 print(string.format("%d passed, %d failed", passes, failures))
 return failures

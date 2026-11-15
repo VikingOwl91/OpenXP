@@ -632,7 +632,9 @@ function SS.SkippedChains(guide)
                     local id = tonumber(e.questId)
                     if id and id > 0 and not seen[id] and
                         (e.tag == "accept" or e.tag == "turnin" or e.tag == "complete") and
-                        not SS.api.IsTurnedIn(id) then
+                        not SS.api.IsTurnedIn(id) and
+                        -- a pickup that's in your log wasn't skipped
+                        not (e.tag == "accept" and SS.api.IsOnQuest(id)) then
                         seen[id] = true
                         local missing = {}
                         if card.MissingChain and card.HasQuestData and card.HasQuestData() then
