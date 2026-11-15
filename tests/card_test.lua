@@ -667,5 +667,103 @@ try("here first: a finished turn-in you're standing by comes before the far step
     addon.currentGuide = {name = "28-30 Duskwood", steps = steps}
     addon.GetGuideProgress = function() return 1 end
 end)
+-- Quest data providers. Journey to Tarren Mill (1065) is turned in at
+-- Apothecary Lydon, who then offers Blood of Innocents (1066). The Horde
+-- route marks the turn in optional and never picks 1065 up, so without it
+-- the pickup of 1066 is a step nobody offers.
+local lydon = {index = 15, elements = {
+    el{tag = "accept", questId = 496, text = "Accept Elixir of Suffering", completed = true},
+    el{tag = "turnin", questId = 1065, skipIfMissing = true, text = "Turn in Journey to Tarren Mill"},
+    el{tag = "accept", questId = 1066, text = "Accept Blood of Innocents"}}}
+local wasComplete
+local function tarrenMill(level)
+    wasComplete = addon.IsQuestComplete
+    addon.IsQuestComplete = function() return true end
+    card.data = {}
+    QuestieLoader = nil
+    OpenXP_ForeverData = {quests = {
+        [1064] = {},
+        [1065] = {all = {1064}, preSrc = "foreverdb_verified"},
+        [1066] = {min = 13, minSrc = "cmangos_classic", all = {1065}, preSrc = "cmangos_classic"},
+    }}
+    local done, log = {}, {}
+    addon.IsQuestTurnedIn = function(id) return done[id] end
+    addon.IsOnQuest = function(id) return log[id] end
+    UnitLevel = function() return level or 25 end
+    steps[15] = lydon
+    addon.currentGuide = {name = "22-23 Hillsbrad/Alterac", steps = steps}
+    return done, log
+end
+local function tarrenMillOver()
+    addon.IsQuestComplete = wasComplete
+    OpenXP_ForeverData = nil
+    steps[15] = {index = 15, elements = {el{textOnly = true, text = "Step text 15"}}}
+    addon.currentGuide = {name = "28-30 Duskwood", steps = steps}
+    addon.RXPFrame.activeSteps = {steps[1], steps[2]}
+    card.data = {prereqs = {}, chains = {}, info = {}}
+end
+try("data addon: Blood of Innocents is blocked until Journey to Tarren Mill is done", function()
+    local done, log = tarrenMill()
+    local by, source = card.QuestBlocked(1066)
+    assert(by == 1065, "blocked by " .. tostring(by))
+    assert(source == "cmangos_classic", "Classic data must not be passed off as seen in Forever: " .. tostring(source))
+    local _, src65 = card.QuestBlocked(1065)
+    assert(src65 == "foreverdb_verified", "1065 needs 1064, seen in Forever: " .. tostring(src65))
+    local problem = card.StepProblem(lydon)
+    assert(problem and problem.kind == "chain" and problem.quest == 1066,
+           "optional turn in for a quest you don't have hides the missed chain")
+    assert(problem.source == "cmangos_classic", "problem carries the source")
+    addon.RXPFrame.activeSteps = {lydon}
+    card.Refresh(true)
+    local text = card.blocksForTest[1].warn.text:GetText() or ""
+    assert(text:find("ForeverDB") and text:find("Classic data"), "warning names where the rule comes from: " .. text)
+    -- with 1065 in the log this step turns it in, so there's nothing to ask
+    done[1064], log[1065] = true, true
+    assert(card.StepProblem(lydon) == nil, "asked although the step turns 1065 in")
+    log[1065], done[1065] = nil, true
+    assert(not card.QuestBlocked(1066) and card.StepProblem(lydon) == nil, "still blocked after 1065")
+    tarrenMillOver()
+end)
+try("data addon: a quest above your level says so", function()
+    local done = tarrenMill(12)
+    done[1065] = true
+    local level, source = card.MinLevel(1066)
+    assert(level == 13 and source == "cmangos_classic", "min level from the data addon")
+    local problem = card.StepProblem(lydon)
+    assert(problem and problem.kind == "level" and problem.quest == 1066 and problem.level == 13,
+           "no level warning")
+    addon.RXPFrame.activeSteps = {lydon}
+    card.Refresh(true)
+    local text = card.blocksForTest[1].warn.text:GetText() or ""
+    assert(text:find("13") and text:find("Classic data"), "level warning text: " .. text)
+    UnitLevel = function() return 13 end
+    assert(card.StepProblem(lydon) == nil, "warned at the level the quest needs")
+    tarrenMillOver()
+end)
+try("providers: other addons can register, the first answer counts", function()
+    local done = tarrenMill()
+    OpenXP_ForeverData.quests[1066] = {}
+    assert(not card.QuestBlocked(1066), "the data addon knows the quest and says it needs nothing")
+    assert(card.RegisterQuestProvider("Late", {Prereqs = function() return {all = {1065}, source = "late"} end}))
+    assert(not card.QuestBlocked(1066), "a later provider overruled an earlier answer")
+    card.RegisterQuestProvider("Late", nil)
+    OpenXP_ForeverData = nil
+    assert(not card.QuestBlocked(1066), "no data, no block")
+    assert(card.RegisterQuestProvider("Mine", {
+        Prereqs = function(id) if id == 1066 then return {any = {1065}, source = "mine"} end end,
+        MinLevel = function(id) if id == 1066 then return 30, "mine" end end,
+    }), "provider not taken")
+    assert(not card.RegisterQuestProvider("Broken", {Prereqs = "no"}), "took a provider that isn't one")
+    local by, source = card.QuestBlocked(1066)
+    assert(by == 1065 and source == "mine", "registered provider not asked")
+    assert(card.MinLevel(1066) == 30, "registered provider's level")
+    assert(card.SourceLabel("mine") == "mine", "unknown sources are shown as they are")
+    -- a provider that throws is skipped, not fatal
+    card.RegisterQuestProvider("Mine", {Prereqs = function() error("boom") end})
+    assert(not card.QuestBlocked(1066), "broken provider blocked a quest")
+    card.RegisterQuestProvider("Mine", nil)
+    done[1065] = true
+    tarrenMillOver()
+end)
 print(fails == 0 and "card smoke test passed" or (fails .. " failed"))
 return fails

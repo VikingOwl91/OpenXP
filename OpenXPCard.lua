@@ -516,10 +516,13 @@ function card.MissingQuest(step)
 end
 
 ---------------------------------------------------------------------------
--- Quest data: read from Questie while the game runs, when it's installed.
--- OpenXP ships no quest database of its own, so nothing goes out of date
--- and nothing of Questie's is copied into OpenXP.
--- card.Prereqs(id) -> {any=, all=, excl=}; card.QuestInfoOf(id) -> {n, l, r, s, f, o}
+-- Quest data: read from other addons while the game runs, when they're
+-- installed (Questie, the OpenXP_ForeverData addon, or one that registers
+-- itself with RXPGuides.RegisterQuestProvider). OpenXP ships no quest
+-- database of its own, so nothing goes out of date and nothing of theirs
+-- is copied into OpenXP.
+-- card.Prereqs(id) -> {any=, all=, excl=, source=}; card.MinLevel(id) -> level, source;
+-- card.QuestInfoOf(id) -> {n, l, r, s, f, o}
 -- A spot is {name, uiMapId, x, y}. Tests can fill card.data instead.
 ---------------------------------------------------------------------------
 
@@ -632,10 +635,49 @@ local function ForPlayer(q)
     return bit.band(races, playerRaceBit) ~= 0
 end
 
+-- Where quest rules come from. A provider is a table with either or both of
+--   Prereqs(id)  -> {any = {ids}, all = {ids}, excl = {ids}, source = "..."},
+--                   false when it knows the quest and it needs nothing,
+--                   nil when it doesn't know the quest
+--   MinLevel(id) -> level, source (nil when it doesn't know)
+-- They're asked in the order they were added and the first answer counts.
+-- source says where a rule comes from and is shown with it:
+--   "questie", "foreverdb_verified" (seen in WoW Forever) or
+--   "cmangos_classic" (Classic data, not confirmed in WoW Forever).
+local providers = {}
+function card.RegisterQuestProvider(name, provider)
+    if type(name) ~= "string" or name == "" then return false end
+    if provider ~= nil then
+        if type(provider) ~= "table" then return false end
+        local hasPrereqs, hasLevel = type(provider.Prereqs) == "function", type(provider.MinLevel) == "function"
+        if not (hasPrereqs or hasLevel) then return false end
+        if (provider.Prereqs ~= nil and not hasPrereqs) or (provider.MinLevel ~= nil and not hasLevel) then return false end
+    end
+    for i, p in ipairs(providers) do
+        if p.name == name then
+            if provider then p.provider = provider else table.remove(providers, i) end
+            return true
+        end
+    end
+    if provider then tinsert(providers, {name = name, provider = provider}) end
+    return true
+end
+if addon.RXPGuides then addon.RXPGuides.RegisterQuestProvider = card.RegisterQuestProvider end
+
+local SOURCE_LABELS = {
+    questie = "Questie",
+    foreverdb_verified = "ForeverDB.net, seen in WoW Forever",
+    cmangos_classic = "ForeverDB.net, Classic data (not confirmed in WoW Forever)",
+}
+function card.SourceLabel(source)
+    if not source then return end
+    local label = SOURCE_LABELS[source]
+    return label and L(label) or tostring(source)
+end
+
 local prereqCache, infoCache = {}, {}
-function card.Prereqs(id)
-    if card.data.prereqs then return card.data.prereqs[id] end
-    if prereqCache[id] ~= nil then return prereqCache[id] or nil end
+local function QuestiePrereqs(id)
+    if prereqCache[id] ~= nil then return prereqCache[id] end
     local q = QGet("Quest", id)
     if not q then return end -- unknown, or Questie not ready yet: ask again later
     local pre = false
@@ -646,11 +688,81 @@ function card.Prereqs(id)
             for i, v in ipairs(list) do out[i] = math.abs(v) end
             return out
         end
-        pre = {any = abs(q.preQuestSingle), all = abs(q.preQuestGroup), excl = abs(q.exclusiveTo)}
+        pre = {any = abs(q.preQuestSingle), all = abs(q.preQuestGroup), excl = abs(q.exclusiveTo),
+               source = "questie"}
         if not (pre.any or pre.all or pre.excl) then pre = false end
     end
     prereqCache[id] = pre
-    return pre or nil
+    return pre
+end
+card.RegisterQuestProvider("Questie", {
+    Prereqs = QuestiePrereqs,
+    MinLevel = function(id)
+        local q = QGet("Quest", id)
+        local level = q and tonumber(q.requiredLevel)
+        if level and level > 0 then return level, "questie" end
+    end,
+})
+
+-- The OpenXP_ForeverData addon (its own download, GPL-3.0, built from
+-- ForeverDB.net's data by tools/compile_foreverdb.py): one global table,
+--   quests[id] = {min =, minSrc =, all = {ids}, any = {ids}, excl = {ids}, preSrc =}
+local foreverQuests, foreverPre
+local function ForeverQuest(id)
+    local data = _G.OpenXP_ForeverData
+    local quests = type(data) == "table" and data.quests
+    if type(quests) ~= "table" then return end
+    if quests ~= foreverQuests then foreverQuests, foreverPre = quests, {} end
+    local q = quests[id]
+    if type(q) == "table" then return q end
+end
+card.RegisterQuestProvider("OpenXP_ForeverData", {
+    Prereqs = function(id)
+        local q = ForeverQuest(id)
+        if not q then return end
+        local pre = foreverPre[id]
+        if pre == nil then
+            pre = (q.all or q.any or q.excl) and
+                      {all = q.all, any = q.any, excl = q.excl, source = q.preSrc} or false
+            foreverPre[id] = pre
+        end
+        return pre
+    end,
+    MinLevel = function(id)
+        local q = ForeverQuest(id)
+        local level = q and tonumber(q.min)
+        if level and level > 0 then return level, q.minSrc end
+    end,
+})
+
+function card.Prereqs(id)
+    if card.data.prereqs then return card.data.prereqs[id] end
+    for i = 1, #providers do
+        local fn = providers[i].provider.Prereqs
+        if fn then
+            local ok, pre = pcall(fn, id)
+            if ok and type(pre) == "table" then return pre end
+            if ok and pre == false then return end
+        end
+    end
+end
+
+-- The level the quest is offered from, and where that comes from
+function card.MinLevel(id)
+    if card.data.info then
+        local info = card.data.info[id]
+        local level = info and info.r
+        if level and level > 0 then return level end
+        return
+    end
+    for i = 1, #providers do
+        local fn = providers[i].provider.MinLevel
+        if fn then
+            local ok, level, source = pcall(fn, id)
+            level = ok and tonumber(level)
+            if level and level > 0 then return level, source end
+        end
+    end
 end
 
 function card.QuestInfoOf(id)
@@ -712,7 +824,7 @@ end
 
 -- Pickup steps for quests you can't get yet (a pre-quest you skipped, or
 -- one you did that locks this one out) send you to a giver who has nothing
--- for you. DB/forever/QuestPrereqs.lua lists what each guide quest needs.
+-- for you. card.Prereqs says what each quest needs.
 local function TurnedIn(id)
     return addon.IsQuestTurnedIn and addon.IsQuestTurnedIn(math.abs(id))
 end
@@ -736,7 +848,8 @@ function card.BreadcrumbClosed(id)
     if to and ((addon.IsOnQuest and addon.IsOnQuest(to)) or TurnedIn(to)) then return to end
 end
 
--- Returns the quest that has to be done first, or nil when it can be picked up
+-- Returns the quest that has to be done first and where that rule comes
+-- from, or nil when it can be picked up
 function card.QuestBlocked(id)
     local pre = card.Prereqs(id)
     if not pre then return end
@@ -746,17 +859,17 @@ function card.QuestBlocked(id)
         for _, q in ipairs(pre.any) do
             if TurnedIn(q) then ok = true; break end
         end
-        if not ok then return pre.any[1] end
+        if not ok then return pre.any[1], pre.source end
     end
     if pre.all then
         for _, q in ipairs(pre.all) do
-            if not TurnedIn(q) then return q end
+            if not TurnedIn(q) then return q, pre.source end
         end
     end
     if pre.excl then
         for _, q in ipairs(pre.excl) do
             q = math.abs(q)
-            if TurnedIn(q) or (addon.IsOnQuest and addon.IsOnQuest(q)) then return q end
+            if TurnedIn(q) or (addon.IsOnQuest and addon.IsOnQuest(q)) then return q, pre.source end
         end
     end
 end
@@ -872,7 +985,13 @@ function card.ChainMissed(step, id, blocker, chain, needAccept)
     local here = {}
     for _, e in ipairs(step and step.elements or {}) do
         local q = QuestIdOf(e)
-        if q and (e.tag == "turnin" or e.tag == "accept" or e.tag == "complete") then here[q] = true end
+        if q and (e.tag == "turnin" or e.tag == "accept" or e.tag == "complete") then
+            -- an optional turn in (".turnin -id") for a quest you don't
+            -- have does nothing, so it doesn't take care of that quest
+            local idle = e.tag == "turnin" and e.skipIfMissing and
+                             not (addon.IsOnQuest and addon.IsOnQuest(q))
+            if not idle then here[q] = true end
+        end
     end
     local function missed(q)
         if not q or q == id or here[q] or TurnedIn(q) then return false end
@@ -888,8 +1007,10 @@ end
 
 -- What's wrong with a step, if anything:
 --   {kind = "missing", quest}  turn in / kill step for a quest not in the log
---   {kind = "chain", quest, chain, needAccept}  quests before this one aren't done
---   {kind = "locked", quest, by}  a quest you did locks this one out
+--   {kind = "chain", quest, chain, needAccept, source}  quests before this one aren't done
+--   {kind = "locked", quest, by, source}  a quest you did locks this one out
+--   {kind = "level", quest, level, source}  pickup of a quest above your level
+-- source is where the rule comes from (card.SourceLabel), when it's known.
 function card.StepProblem(step)
     if not (step and step.elements) then return end
     for _, e in ipairs(step.elements) do
@@ -909,7 +1030,7 @@ function card.StepProblem(step)
                 needAccept = true
             end
             if needAccept ~= nil then
-                local blocker = card.QuestBlocked(id)
+                local blocker, source = card.QuestBlocked(id)
                 if blocker then
                     local pre = card.Prereqs(id)
                     local isExcl = false
@@ -917,15 +1038,21 @@ function card.StepProblem(step)
                         if math.abs(q) == blocker then isExcl = true end
                     end
                     if isExcl then
-                        return {kind = "locked", quest = id, by = blocker}
+                        return {kind = "locked", quest = id, by = blocker, source = source}
                     end
                     local chain = card.MissingChain(id)
                     if card.ChainMissed(step, id, blocker, chain, needAccept) then
                         return {kind = "chain", quest = id, chain = chain,
-                                needAccept = needAccept}
+                                needAccept = needAccept, source = source}
                     end
                 elseif needAccept then
                     return {kind = "missing", quest = id}
+                elseif e.tag == "accept" and UnitLevel and
+                    not (addon.IsOnQuest and addon.IsOnQuest(id)) and not TurnedIn(id) then
+                    local level, levelSource = card.MinLevel(id)
+                    if level and (UnitLevel("player") or level) < level then
+                        return {kind = "level", quest = id, level = level, source = levelSource}
+                    end
                 end
             end
         end
@@ -1262,6 +1389,9 @@ local function LayoutBlock(b, step, first)
         elseif problem.kind == "locked" then
             text = fmt(L("You can't get %s: doing %s locked it out"), QuestName(id), QuestName(problem.by))
             buttons = {w.skip}
+        elseif problem.kind == "level" then
+            text = fmt(L("You need level %d to pick up %s"), problem.level, QuestName(id))
+            buttons = {w.skip}
         else
             local chain = problem.chain or {}
             if #chain == 0 then
@@ -1293,6 +1423,8 @@ local function LayoutBlock(b, step, first)
                 end
             end
         end
+        local from = card.SourceLabel(problem.source)
+        if from then text = text .. "\n|cFF9EA3B3" .. fmt(L("Source: %s"), from) .. "|r" end
         b.missing = m
         SetFont(w.text, 0)
         w.text:SetWidth(textWidth)
