@@ -4,8 +4,8 @@
 OpenXP ships no quest database. This writes a separate addon, under
 ForeverDB's licence (GPL-3.0 with an attribution term), that OpenXP reads
 in game when it's installed: which quests a quest needs first, the level
-it's offered from and who gives it, for every quest the guides use and the
-quests those need.
+it's offered from, who gives and takes it and where they are, for every
+quest the guides use and the quests those need.
 
   1. Get the ForeverDB addon (https://foreverdb.net/downloads/addon-manifest.json
      lists the current zip and its SHA-256) and unzip it.
@@ -36,6 +36,7 @@ CREDIT_LINE = re.compile(r"^-- Data: ForeverDB\.net \(https://foreverdb\.net\)")
 ENTRY = re.compile(r'^\[(\d+)\]="((?:[^"\\]|\\.)*)",?\s*$')
 QUEST_LINE = re.compile(r"^\s*\.(?:accept|turnin|complete)\s+-?(\d+)", re.M)
 REF = re.compile(r"^([noi])(\d+)$")
+SPOTS_ENTRY = re.compile(r"^\[(\d+)\]=\{(.*)\},?\s*$")
 
 
 def fail(message) -> "NoReturn":
@@ -50,8 +51,10 @@ def read(path):
         return f.read()
 
 
-def string_table(text, name):
+def string_table(text, name, optional=False):
     """The {[id] = "..."} table assigned to ns.<name>, as {id: string}."""
+    if optional and "ns.%s = {" % name not in text:
+        return {}
     out, inside = {}, False
     for line in text.splitlines():
         if not inside:
@@ -65,6 +68,45 @@ def string_table(text, name):
     if not inside:
         fail("no ns.%s table found: has ForeverDB's data format changed?" % name)
     return out
+
+
+def spots_table(text, name):
+    """The {[quest] = {s = "spots", e = "spots", o = {[n] = "spots"}}} table
+    assigned to ns.<name>, as {quest: {"s": str, "e": str, "o": {n: str}}}."""
+    out, inside = {}, False
+    for line in text.splitlines():
+        if not inside:
+            inside = line.startswith("ns.%s = {" % name)
+            continue
+        if line.startswith("}"):
+            break
+        m = SPOTS_ENTRY.match(line)
+        if not m:
+            continue
+        body, entry = m.group(2), {"o": {}}
+        objectives = re.search(r"\bo=\{([^}]*)\}", body)
+        if objectives:
+            entry["o"] = {int(n): v for n, v in re.findall(r'\[(\d+)\]="([^"]*)"', objectives.group(1))}
+            body = body.replace(objectives.group(0), "")
+        for key in ("s", "e"):
+            found = re.search(r'\b%s="([^"]*)"' % key, body)
+            if found:
+                entry[key] = found.group(1)
+        out[int(m.group(1))] = entry
+    return out
+
+
+def point(spots):
+    """The first base-36 spot (map * 1e6 + x * 10 * 1e3 + y * 10) as [uiMap, x, y] in percent."""
+    for token in (spots or "").split():
+        try:
+            value = int(token, 36)
+        except ValueError:
+            continue
+        ui_map, rest = divmod(value, 1000000)
+        if ui_map > 0:
+            return [ui_map, rest // 1000 / 10, rest % 1000 / 10]
+    return None
 
 
 def ids(text):
@@ -99,10 +141,21 @@ def load_foreverdb(src):
     groups = {}
     if "ns.qcExcl = {" in classic_text:
         groups = {g: ids(s) for g, s in string_table(classic_text, "qcExcl").items()}
+    def named(table):
+        return {i: v.split("|") for i, v in table.items()}
+
     return {
         "classic": string_table(classic_text, "qcQuests"),
         "forever": string_table(forever_text, "qfQuests"),
         "groups": groups,
+        # [id] = [Classic name, Classic spots]
+        "classic_npcs": named(string_table(classic_text, "qcNpc", optional=True)),
+        "classic_objects": named(string_table(classic_text, "qcObj", optional=True)),
+        "npc_names": string_table(forever_text, "qfNpcNames", optional=True),
+        "npc_spots": string_table(forever_text, "qfNpcSpots", optional=True),
+        "item_names": string_table(forever_text, "qfItems", optional=True),
+        "seen": spots_table(forever_text, "qfSeen"),
+        "poi": spots_table(forever_text, "qfPoi"),
         "credit": credit,
         "meta": meta,
     }
@@ -116,6 +169,31 @@ def guide_quest_ids(guides):
     return found
 
 
+def place(db, qid, ref, end):
+    """Who gives (end "s") or takes (end "e") a quest and where:
+    ([name, uiMap, x, y], source), or (None, None)."""
+    if not ref:
+        return None, None
+    kind, rid = ref
+    if kind == "i":
+        name = db["item_names"].get(rid)
+        return ([name, 0, 0, 0], VERIFIED) if name else (None, None)
+    classic = db["classic_npcs" if kind == "n" else "classic_objects"].get(rid, [])
+    name = (kind == "n" and db["npc_names"].get(rid)) or (classic[0] if classic else "")
+    # best first: where players were offered it or handed it in, the Forever
+    # client's quest map, where players saw the creature, Classic data
+    at, source = point(db["seen"].get(qid, {}).get(end)), VERIFIED
+    if not at:
+        at = point(db["poi"].get(qid, {}).get(end))
+    if not at and kind == "n":
+        at = point(db["npc_spots"].get(rid))
+    if not at:
+        at, source = point(classic[1] if len(classic) > 1 else ""), CLASSIC
+    if not at:
+        return ([name, 0, 0, 0], CLASSIC) if name else (None, None)
+    return [name or "?"] + at, source
+
+
 def quest(db, qid):
     """One quest's rules with their sources, or None when ForeverDB has nothing on it."""
     cs, fs = db["classic"].get(qid), db["forever"].get(qid)
@@ -124,6 +202,9 @@ def quest(db, qid):
     c = (cs or "").split("|") + [""] * 14
     f = (fs or "").split("|") + [""] * 11
     q = {}
+    level = number(f[1]) or number(c[1])
+    if level > 0:
+        q["level"] = level
 
     # level it's offered from: Forever's own value, else Classic's unless
     # players finished the quest below it in Forever
@@ -156,6 +237,16 @@ def quest(db, qid):
         giver, source = first_ref(c[9]), CLASSIC
     if giver:
         q["giverType"], q["giver"], q["giverSrc"] = giver[0], giver[1], source
+    start, source = place(db, qid, giver, "s")
+    if start:
+        q["start"], q["startSrc"] = start, source
+    finish, source = place(db, qid, first_ref(f[5]) or first_ref(c[10]), "e")
+    if finish:
+        q["finish"], q["finishSrc"] = finish, source
+    seen, poi = db["seen"].get(qid, {}).get("o", {}), db["poi"].get(qid, {}).get("o", {})
+    objs = [at for at in (point(seen.get(n) or poi.get(n)) for n in sorted(set(seen) | set(poi))) if at]
+    if objs:
+        q["objs"] = objs
     return q
 
 
@@ -180,8 +271,19 @@ def lua_list(values):
     return "{" + ",".join(str(v) for v in values) + "}"
 
 
+def lua_number(value):
+    return "%g" % value
+
+
+def lua_spot(spot):
+    name = spot[0].replace("\\", "\\\\").replace('"', '\\"')
+    return '{"%s",%s}' % (name, ",".join(lua_number(v) for v in spot[1:]))
+
+
 def lua_quest(q):
     parts = []
+    if "level" in q:
+        parts.append("level=%d" % q["level"])
     if "min" in q:
         parts.append("min=%d,minSrc=%s" % (q["min"], "V" if q["minSrc"] == VERIFIED else "C"))
     for key in ("all", "any", "excl"):
@@ -194,6 +296,11 @@ def lua_quest(q):
     if "giver" in q:
         parts.append('giver=%d,giverType="%s",giverSrc=%s' %
                      (q["giver"], q["giverType"], "V" if q["giverSrc"] == VERIFIED else "C"))
+    for key in ("start", "finish"):
+        if key in q:
+            parts.append("%s=%s,%sSrc=%s" % (key, lua_spot(q[key]), key, "V" if q[key + "Src"] == VERIFIED else "C"))
+    if "objs" in q:
+        parts.append("objs={%s}" % ",".join("{%s}" % ",".join(lua_number(v) for v in at) for at in q["objs"]))
     return "{" + ",".join(parts) + "}"
 
 
@@ -201,10 +308,12 @@ def data_lua(db, quests):
     meta = db["meta"]
     lines = [
         db["credit"],
-        "-- Quest rules for OpenXP: for each quest the level it's offered from (min), the quests that all have to be done",
-        "-- first (all), of which one has to be done first (any), the quests that lock it out (excl), the quest players were",
-        "-- offered it after when no rule is known (after) and who gives it (giver; giverType n npc, o object, i item).",
-        "-- minSrc, preSrc and giverSrc say where each comes from:",
+        "-- Quest rules for OpenXP: for each quest its level (level), the level it's offered from (min), the quests that all",
+        "-- have to be done first (all), of which one has to be done first (any), the quests that lock it out (excl), the",
+        "-- quest players were offered it after when no rule is known (after), who gives it (giver; giverType n npc,",
+        "-- o object, i item), who gives and takes it and where (start, finish: {name, uiMap, x, y} in percent, uiMap 0",
+        "-- when the place isn't known) and a place for each objective (objs: {uiMap, x, y}).",
+        "-- minSrc, preSrc, giverSrc, startSrc and finishSrc say where each comes from:",
         '--   "%s": WoW Forever data, or a Classic rule players also saw hold in WoW Forever' % VERIFIED,
         '--   "%s": Classic data (CMaNGOS classic-db), not confirmed in WoW Forever' % CLASSIC,
         "-- Generated from ForeverDB's Data/QuestForever.lua and Data/QuestClassic.lua by OpenXP's",
@@ -246,7 +355,7 @@ Data from ForeverDB.net (https://foreverdb.net)
 
 This addon is one data file, Data.lua, for the OpenXP leveling guide addon. It
 holds, for %(count)d quests, which quests have to be done first, the level a
-quest is offered from and who gives it. It is not part of OpenXP and OpenXP
+quest is offered from, who gives and takes it and where they are. It is not part of OpenXP and OpenXP
 works without it.
 
 1. Source

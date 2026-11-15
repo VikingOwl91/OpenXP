@@ -40,6 +40,13 @@ ns.qcQuests = {
 
 ns.qcNpc = {
 [1065]="Riverpaw Shaman|nr7du8",
+[2216]="Apothecary Lydon|nk6g48 nk6g49",
+[3419]="Apothecary Zamah|o300vl",
+[10]="Said \\"Ten\\"|nr7du8",
+}
+
+ns.qcObj = {
+[77]="Wanted Poster|nk6g49",
 }
 
 ns.qcExcl = {
@@ -59,7 +66,20 @@ ns.qfQuests = {
 }
 
 ns.qfPoi = {
+[1065]={s="nk6g40",e="nk6g40"},
 [1066]={s="nk6g48",e="nk6g48"},
+}
+
+ns.qfSeen = {
+[1065]={s="o3036y",e="nk6g47",o={[1]="nk6g40 nk6g41",[2]="nk6g49"}},
+}
+
+ns.qfNpcSpots = {
+[10]="nk6g41",
+}
+
+ns.qfNpcNames = {
+[3419]="Zamah the Apothecary",
 }
 '''
 
@@ -178,6 +198,31 @@ def test_min_level_sources():
         assert quests[501]["giver"] == 77 and quests[501]["giverType"] == "o"
 
 
+def test_givers_and_where_they_are():
+    with tempfile.TemporaryDirectory() as tmp:
+        quests = compiled(tmp)
+        q = quests[1065]
+        assert q["level"] == 18
+        # where players were offered it and handed it in, in Forever; Forever's name for the giver
+        assert q["start"] == ["Zamah the Apothecary", 1456, 23.1, 21.0] and q["startSrc"] == "foreverdb_verified"
+        assert q["finish"] == ["Apothecary Lydon", 1424, 61.5, 19.1] and q["finishSrc"] == "foreverdb_verified"
+        assert q["objs"] == [[1424, 61.5, 18.4], [1424, 61.5, 19.3]]
+        # the Forever client's own quest map point
+        assert quests[1066]["start"] == ["Apothecary Lydon", 1424, 61.5, 19.2]
+        assert quests[1066]["startSrc"] == "foreverdb_verified"
+        # Classic only: where they stand comes from Classic data; the name Forever showed still wins
+        q = quests[1067]
+        assert q["start"] == ["Apothecary Lydon", 1424, 61.5, 19.2] and q["startSrc"] == "cmangos_classic"
+        assert q["finish"] == ["Zamah the Apothecary", 1456, 22.8, 20.9] and q["finishSrc"] == "cmangos_classic"
+        assert "objs" not in q
+        # an object gives it; the creature that takes it was seen in Forever
+        q = quests[501]
+        assert q["start"] == ["Wanted Poster", 1424, 61.5, 19.3] and q["startSrc"] == "cmangos_classic"
+        assert q["finish"] == ['Said "Ten"', 1424, 61.5, 18.5] and q["finishSrc"] == "foreverdb_verified"
+        # nobody known to give it: no spot
+        assert "start" not in quests[92479] or quests[92479]["start"][1] == 0
+
+
 def test_addon_files():
     with tempfile.TemporaryDirectory() as tmp:
         addon = build(tmp)
@@ -186,7 +231,10 @@ def test_addon_files():
         data = open(os.path.join(addon, "Data.lua"), encoding="utf-8").read()
         # ForeverDB's licence asks for this line to stay at the top of files with its data
         assert data.splitlines()[0] == CREDIT
-        assert "[1066]={min=13,minSrc=C,all={1065},preSrc=C,giver=2216,giverType=\"n\",giverSrc=V}," in data
+        assert ("[1066]={level=23,min=13,minSrc=C,all={1065},preSrc=C,giver=2216,giverType=\"n\",giverSrc=V,"
+                "start={\"Apothecary Lydon\",1424,61.5,19.2},startSrc=V,"
+                "finish={\"Apothecary Lydon\",1424,61.5,19.2},finishSrc=V},") in data
+        assert 'finish={"Said \\"Ten\\"",1424,61.5,18.5}' in data
         assert data.index("[990]=") < data.index("[1063]=") < data.index("[92479]=")
         toc = open(os.path.join(addon, "OpenXP_ForeverData.toc"), encoding="utf-8").read()
         assert "## Version: 2026-11-15.d2e4316c" in toc and "Data.lua" in toc
@@ -217,6 +265,7 @@ def test_emitted_lua_loads():
         rt = lupa_mod.LuaRuntime()
         rt.execute(open(os.path.join(addon, "Data.lua"), encoding="utf-8").read())
         data = rt.globals().OpenXP_ForeverData
+        assert data.quests[501].finish[1] == 'Said "Ten"' and data.quests[1065].objs[2][3] == 19.3
         assert data.format == 1 and data.build == "1.60.1.70938"
         assert data.quests[1066].all[1] == 1065
         assert data.quests[1066].preSrc == "cmangos_classic"

@@ -765,5 +765,36 @@ try("providers: other addons can register, the first answer counts", function()
     done[1065] = true
     tarrenMillOver()
 end)
+try("data addon: the chain walk names who gives and takes each quest", function()
+    local done, log = tarrenMill()
+    OpenXP_ForeverData.quests[1065] = {level = 18, all = {1064}, preSrc = "foreverdb_verified",
+        start = {"Apothecary Zamah", 1456, 22.9, 21.0}, startSrc = "foreverdb_verified",
+        finish = {"Apothecary Lydon", 1424, 61.5, 19.2}, finishSrc = "cmangos_classic",
+        objs = {{1424, 50, 40}}}
+    done[1064] = true
+    local info = card.QuestInfoOf(1065)
+    assert(info and info.l == 18 and info.s[1] == "Apothecary Zamah" and info.s[2] == 1456, "no giver from the data addon")
+    assert(info.sSrc == "foreverdb_verified" and info.fSrc == "cmangos_classic", "giver sources lost")
+    assert(info.o[1][2] == 1424 and info.o[1][3] == 50, "objective spot is {name, map, x, y}")
+    assert(card.QuestInfoOf(1064) and not card.QuestInfoOf(1064).s, "a quest with no giver has none")
+    assert(not card.QuestInfoOf(424242), "info for a quest nobody knows")
+    card.StartDetour(1066, {1065}, "available")
+    local st = card.DetourStep()
+    assert(st.elements[2].tag == "accept" and st.elements[2].text == "Get it from Apothecary Zamah",
+           "walk doesn't say who gives it: " .. tostring(st.elements[2].text))
+    log[1065] = true
+    C_QuestLog = {GetQuestObjectives = function() return {{text = "done", finished = true}} end}
+    st = card.DetourStep()
+    assert(st.elements[2].tag == "turnin" and st.elements[2].text == "Talk to Apothecary Lydon", "walk doesn't say who takes it")
+    card.StopDetour()
+    -- other addons can answer too
+    OpenXP_ForeverData = nil
+    assert(card.RegisterQuestProvider("Mine", {QuestInfo = function(id) if id == 7 then return {l = 3, s = {"Me", 1, 2, 3}} end end}),
+           "a provider with only QuestInfo wasn't taken")
+    assert(card.QuestInfoOf(7).s[1] == "Me", "registered provider not asked for quest info")
+    card.RegisterQuestProvider("Mine", nil)
+    done[1065] = true
+    tarrenMillOver()
+end)
 print(fails == 0 and "card smoke test passed" or (fails .. " failed"))
 return fails

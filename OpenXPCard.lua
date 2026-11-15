@@ -635,11 +635,14 @@ local function ForPlayer(q)
     return bit.band(races, playerRaceBit) ~= 0
 end
 
--- Where quest rules come from. A provider is a table with either or both of
+-- Where quest rules come from. A provider is a table with any of
 --   Prereqs(id)  -> {any = {ids}, all = {ids}, excl = {ids}, source = "..."},
 --                   false when it knows the quest and it needs nothing,
 --                   nil when it doesn't know the quest
 --   MinLevel(id) -> level, source (nil when it doesn't know)
+--   QuestInfo(id) -> {l = level, r = level it's offered from, s = who gives
+--                   it, f = who takes it, o = {objective spots}, sSrc =, fSrc =}
+--                   with spots as {name, uiMapId, x, y} (nil when it doesn't know)
 -- They're asked in the order they were added and the first answer counts.
 -- source says where a rule comes from and is shown with it:
 --   "questie", "foreverdb_verified" (seen in WoW Forever) or
@@ -650,8 +653,10 @@ function card.RegisterQuestProvider(name, provider)
     if provider ~= nil then
         if type(provider) ~= "table" then return false end
         local hasPrereqs, hasLevel = type(provider.Prereqs) == "function", type(provider.MinLevel) == "function"
-        if not (hasPrereqs or hasLevel) then return false end
-        if (provider.Prereqs ~= nil and not hasPrereqs) or (provider.MinLevel ~= nil and not hasLevel) then return false end
+        local hasInfo = type(provider.QuestInfo) == "function"
+        if not (hasPrereqs or hasLevel or hasInfo) then return false end
+        if (provider.Prereqs ~= nil and not hasPrereqs) or (provider.MinLevel ~= nil and not hasLevel) or
+            (provider.QuestInfo ~= nil and not hasInfo) then return false end
     end
     for i, p in ipairs(providers) do
         if p.name == name then
@@ -706,13 +711,15 @@ card.RegisterQuestProvider("Questie", {
 
 -- The OpenXP_ForeverData addon (its own download, GPL-3.0, built from
 -- ForeverDB.net's data by tools/compile_foreverdb.py): one global table,
---   quests[id] = {min =, minSrc =, all = {ids}, any = {ids}, excl = {ids}, preSrc =}
-local foreverQuests, foreverPre
+--   quests[id] = {level =, min =, minSrc =, all = {ids}, any = {ids}, excl = {ids}, preSrc =,
+--                 start = {name, uiMapId, x, y}, startSrc =, finish = {...}, finishSrc =,
+--                 objs = {{uiMapId, x, y}, ...}}
+local foreverQuests, foreverPre, foreverInfo
 local function ForeverQuest(id)
     local data = _G.OpenXP_ForeverData
     local quests = type(data) == "table" and data.quests
     if type(quests) ~= "table" then return end
-    if quests ~= foreverQuests then foreverQuests, foreverPre = quests, {} end
+    if quests ~= foreverQuests then foreverQuests, foreverPre, foreverInfo = quests, {}, {} end
     local q = quests[id]
     if type(q) == "table" then return q end
 end
@@ -732,6 +739,22 @@ card.RegisterQuestProvider("OpenXP_ForeverData", {
         local q = ForeverQuest(id)
         local level = q and tonumber(q.min)
         if level and level > 0 then return level, q.minSrc end
+    end,
+    QuestInfo = function(id)
+        local q = ForeverQuest(id)
+        if not q then return end
+        local info = foreverInfo[id]
+        if info and info.from == q then return info end
+        local objs = {}
+        if type(q.objs) == "table" then
+            for i, at in ipairs(q.objs) do objs[i] = {"", at[1], at[2], at[3]} end
+        end
+        info = {l = tonumber(q.level) or 0, r = tonumber(q.min) or 0,
+                s = type(q.start) == "table" and q.start or nil, sSrc = q.startSrc,
+                f = type(q.finish) == "table" and q.finish or nil, fSrc = q.finishSrc,
+                o = objs, from = q}
+        foreverInfo[id] = info
+        return info
     end,
 })
 
@@ -769,7 +792,17 @@ function card.QuestInfoOf(id)
     if card.data.info then return card.data.info[id] end
     if infoCache[id] ~= nil then return infoCache[id] or nil end
     local q = QGet("Quest", id)
-    if not q then return end
+    if not q then
+        -- not in Questie (or no Questie): ask the other providers
+        for i = 1, #providers do
+            local fn = providers[i].provider.QuestInfo
+            if fn then
+                local ok, info = pcall(fn, id)
+                if ok and type(info) == "table" then return info end
+            end
+        end
+        return
+    end
     local info = false
     if q then
         local zone = q.zoneOrSort
