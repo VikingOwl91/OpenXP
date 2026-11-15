@@ -336,6 +336,7 @@ def toc(meta):
     return "\n".join([
         "## Interface: 16001",
         "## Title: OpenXP Forever Data",
+        "## IconTexture: Interface\\AddOns\\%s\\icon" % ADDON,
         "## Notes: Quest chains and quest levels for OpenXP in WoW Forever. Data from ForeverDB.net (https://foreverdb.net).",
         "## Author: OpenXP contributors, data by ForeverDB.net",
         "## Version: %s" % meta["version"],

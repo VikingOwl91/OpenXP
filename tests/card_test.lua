@@ -67,6 +67,10 @@ addon.arrowFrame.text = obj("fs")
 addon.DrawArrow = function(self) self.distance = 142; self.element = {title = "Lord Ello"} end
 addon.SetupArrow = function() end
 
+-- map library: just enough to turn a map point into a world point
+LibStub = function()
+    return {GetWorldCoordinatesFromZone = function(_, x, y, map) return x * 1000, y * 1000, map >= 1440 and 1 or 0 end}
+end
 local chunk = assert(loadfile(ROOT .. "/OpenXPCard.lua"))
 chunk("OpenXP", addon)
 local card = addon.card
@@ -793,6 +797,30 @@ try("data addon: the chain walk names who gives and takes each quest", function(
            "a provider with only QuestInfo wasn't taken")
     assert(card.QuestInfoOf(7).s[1] == "Me", "registered provider not asked for quest info")
     card.RegisterQuestProvider("Mine", nil)
+    done[1065] = true
+    tarrenMillOver()
+end)
+try("chain walk: a giver in another zone gets a way there", function()
+    local done, log = tarrenMill()
+    OpenXP_ForeverData.quests[1065].start = {"Apothecary Zamah", 1456, 22.9, 21.0}
+    done[1064] = true
+    card.StartDetour(1066, {1065}, "available")
+    local st, _, target = card.DetourStep()
+    assert(target and target.title == "Apothecary Zamah" and target.arrow, "no arrow target for the giver")
+    -- the travel planner (Travel.lua) only plans for a target that says which zone it's in
+    assert(target.zone == 1456 and target.instance == 1, "target doesn't say which zone it's in")
+    local was = addon.travel
+    local planned = {wx = target.wx, wy = target.wy, zone = target.zone}
+    addon.travel = {Current = function() return {target = planned} end,
+                    Lines = function() return {"1. Take the zeppelin to Orgrimmar"} end}
+    card.detourTarget = target
+    local lines = card.TravelLines(st)
+    assert(lines and lines[1] == "1. Take the zeppelin to Orgrimmar", "the walk doesn't list the way there")
+    assert(not card.TravelLines(steps[1]), "another step got the walk's way")
+    planned.wx = planned.wx + 5
+    assert(not card.TravelLines(st), "listed a way that leads somewhere else")
+    addon.travel = was
+    card.StopDetour()
     done[1065] = true
     tarrenMillOver()
 end)

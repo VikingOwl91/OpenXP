@@ -239,6 +239,8 @@ def test_addon_files():
         toc = open(os.path.join(addon, "OpenXP_ForeverData.toc"), encoding="utf-8").read()
         assert "## Version: 2026-11-15.d2e4316c" in toc and "Data.lua" in toc
         assert "ForeverDB.net" in toc and "GPL-3.0" in toc
+        # the icon file itself is kept with the addon, not written by the build
+        assert "## IconTexture: Interface\\AddOns\\OpenXP_ForeverData\\icon\n" in toc
         notice = open(os.path.join(addon, "NOTICE.txt"), encoding="utf-8").read()
         assert "Data from ForeverDB.net (https://foreverdb.net)" in notice
         assert "cmangos/classic-db" in notice

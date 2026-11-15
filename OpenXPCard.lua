@@ -1128,7 +1128,8 @@ local function SpotElement(spot, title)
     if not (spot and HBD and spot[2] and spot[2] > 0) then return end
     local wx, wy, instance = HBD:GetWorldCoordinatesFromZone(spot[3] / 100, spot[4] / 100, spot[2])
     if not wx then return end
-    return {wx = wx, wy = wy, instance = instance, title = title or spot[1], arrow = true}
+    -- zone: the way there from another zone is planned from it (Travel.lua)
+    return {wx = wx, wy = wy, instance = instance, zone = spot[2], title = title or spot[1], arrow = true}
 end
 
 local function ObjectivesOf(id)
@@ -1275,6 +1276,20 @@ function card.ReportError(err)
     print("|cFFFF7043OpenXP card error|r (please send this to the OpenXP author): " .. err)
 end
 
+-- The legs of the way to this step when it's in another zone (Travel.lua),
+-- or nil. A chain walk's step is built anew each time, so its plan is known
+-- by where it leads.
+function card.TravelLines(step)
+    local tv = addon.travel
+    local plan = tv and tv.Current and tv.Current()
+    local to = plan and plan.target
+    if not to then return end
+    local walk = step.detour and card.detourTarget
+    if to.step == step or (walk and to.wx == walk.wx and to.wy == walk.wy and to.zone == walk.zone) then
+        return tv.Lines()
+    end
+end
+
 local function LayoutBlock(b, step, first)
     local textWidth = Width() - PAD * 2 - 34 - 12
     b.sep:SetShown(not first)
@@ -1305,10 +1320,10 @@ local function LayoutBlock(b, step, first)
         if here and step.index == here.index then
             tinsert(lines, 1, {text = "|cFFF2C35C" .. fmt(L("You're right here, so do this first. Then back to step %d."), here.from) .. "|r", plain = true})
         end
+    end
+    if role == "now" then
         -- the step is in another zone: how to get there
-        local tv = addon.travel
-        local plan = tv and tv.Current and tv.Current()
-        local travel = plan and plan.target and plan.target.step == step and tv.Lines()
+        local travel = card.TravelLines(step)
         if travel and #travel > 0 then
             tinsert(lines, {text = "|cFFB36BFF" .. L("Getting there:") .. "|r", plain = true})
             for _, t in ipairs(travel) do
